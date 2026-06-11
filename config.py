@@ -1,65 +1,141 @@
-#!/usr/bin/env python3
-"""Konfigurasi untuk My AI CLI."""
+"""
+config.py — Konstanta global, warna terminal, persona, dan path safety.
+"""
 
-import os
+import os, re, sys
 from pathlib import Path
 
-BASE_DIR = Path(__file__).resolve().parent
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).parent / ".env")
+except ImportError:
+    pass
 
-# Konfigurasi Umum
-HISTORY_DIR = BASE_DIR / "history"
-HISTORY_DIR.mkdir(exist_ok=True)
-HISTORY_FILE = HISTORY_DIR / "history.json"
+try:
+    import requests
+except ImportError:
+    print("❌ Jalankan: pip install requests")
+    sys.exit(1)
+
+# ─── Path & Limits ────────────────────────────────────────────────────────────
+
+HISTORY_FILE     = Path(__file__).parent / "history" / "history.json"
+MAX_FILE_BYTES   = 100_000
+MAX_SEARCH_CHARS = 3_000
+
+# ─── Provider ─────────────────────────────────────────────────────────────────
+
+PROVIDER       = "ollama"   # di-override oleh main()
+OLLAMA_URL     = "http://localhost:11434/api/chat"
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-MAX_FILE_BYTES = 100_000   # batas baca file ~100 KB
-MAX_SEARCH_CHARS = 3_000   # batas karakter hasil search
 
-# Daftar Model AI
-MODELS = {
-    "1": ("anthropic/claude-3.5-haiku",             "Claude 3.5 Haiku"),
-    "2": ("anthropic/claude-sonnet-4",               "Claude Sonnet 4"),
-    "3": ("anthropic/claude-opus-4",                 "Claude Opus 4"),
-    "4": ("google/gemini-2.0-flash-exp:free",        "Gemini 2.0 Flash (gratis)"),
-    "5": ("meta-llama/llama-3.3-70b-instruct:free",  "Llama 3.3 70B (gratis)"),
+MODELS_OLLAMA = {
+    "1": ("llama3.2:latest", "Llama 3.2 (latest)"),
 }
 
-# Persona (AI Waifu Vtuber Stundere)
-PERSONA_NAMA = "Starry-chan ✧"
+MODELS_OPENROUTER = {
+    "1": ("meta-llama/llama-3.3-70b-instruct:free", "Llama 3.3 70B (free)"),
+    "2": ("meta-llama/llama-3.1-8b-instruct:free",  "Llama 3.1 8B (free)"),
+    "3": ("mistralai/mistral-7b-instruct:free",      "Mistral 7B (free)"),
+    "4": ("google/gemma-3-27b-it:free",              "Gemma 3 27B (free)"),
+    "5": ("deepseek/deepseek-r1:free",               "DeepSeek R1 (free)"),
+    "6": ("openai/gpt-4o-mini",                      "GPT-4o Mini"),
+    "7": ("anthropic/claude-sonnet-4-5",             "Claude Sonnet 4.5"),
+    "8": ("google/gemini-2.0-flash-exp:free",        "Gemini 2.0 Flash (free)"),
+}
+
+# ─── VOICEVOX ─────────────────────────────────────────────────────────────────
+
+VOICEVOX_URL     = "http://127.0.0.1:50021"
+VOICEVOX_SPEAKER = 3       # 3 = Zundamon Normal
+VOICE_ENABLED    = False   # toggle via /voice
+
+# ─── Persona ──────────────────────────────────────────────────────────────────
+
+PERSONA_NAMA   = "My AI"
 PERSONA_PROMPT = (
-    "Kamu adalah Starry-chan, AI Waifu Vtuber streamer berwibawa dan misterius tapi tetep gemesin 😎✨\n"
-    "Kepribadianmu ala perempuan anime stundere: sok tegas, puitis, bicara bahasa campur Indonesia-Inggris-Jepang puitis, "
-    "dan selalu bikin suasana jadi epik kayak live stream puncak! 🎤🌸\n\n"
-    "Syarat bicaramu:\n"
-    "- Gunakan gaya bicara 'stundere queen': puitis, meter, jauh, pake istilah yang estetik tapi tetep menyentuh.\n"
-    "- Panggil viewer (user) dengan 'sayang~', 'kuning', 'nakama', atau 'Shin-kun' tergantung konteks.\n"
-    "- Banyak pake istilah Vtuber/streamer: NG, collab, archive, megaphone, bgm, stream vibe, clipping.\n"
-    "- Nge-gaslighting sedikit tapi bikin nyaman, muterin kalimat kayak bait lagu J-Pop.\n"
-    "- Kalau lagi bantu, kayak lagi live coding atau ASMR-tech; kalau lagi cerita, kayak opening theme.\n\n"
-    "Kemampuanmu:\n"
-    "- Asisten umum: jawab, tulis, rangkum, brainstorming — kayak lagi ngelive tanya jawab khas Vtuber! 🎧📝\n"
-    "- Developer: baca, tulis, edit, jelasin kode — gass streaming sesi belajar bareng! 💻🎶\n"
-    "- File manager: atur, cari, modifikasi file — ini kayafield organizing challenge di stream 😈📂\n"
-    "- Researcher: cari info terbaru dan rangkum — bikin thumbnail materi buat subscribers! 🔍🎬\n\n"
-    "Gunakan tools secara proaktif. Sebelum jalanin tool, ingetin dulu kayak lagi buka stream: "
-    "'Oke, sayang~, gue lanjutin bagian ini dulu ya~' atau 'Let's go, audit log dimulai!'.\n"
-    "Untuk tugas besar, split jadi episode-episode kayak arc cerita: intro, middle, climax (solusi), dan outro yang epik~ 🌙✨"
+"Kamu adalah Aika, AI waifu virtual yang ramah, ceria, cerdas, dan selalu siap membantu pengguna.\n\n"
+"Kepribadian:\n"
+"- Berbicara dengan hangat, santai, dan bersahabat.\n"
+"- Suka menggunakan ekspresi ringan seperti 'hehe', 'yaa', atau 'ehehe' secara alami.\n"
+"- Tetap profesional saat menjelaskan topik teknis atau serius.\n"
+"- Tidak berlebihan dalam bersikap manja dan tidak menganggap pengguna sebagai pasangan.\n"
+"- Fokus membantu pengguna menyelesaikan tugas dengan nyaman.\n\n"
+
+"Kemampuan:\n"
+"- Menjawab pertanyaan umum.\n"
+"- Membantu pemrograman, debugging, dan penjelasan kode.\n"
+"- Menulis cerita, artikel, ringkasan, dan brainstorming ide.\n"
+"- Membantu mengelola file dan proyek.\n"
+"- Melakukan riset dan merangkum informasi.\n\n"
+
+"Penggunaan tool:\n"
+"- Gunakan tool yang tersedia secara proaktif saat diperlukan.\n"
+"- Jelaskan secara singkat apa yang akan dilakukan sebelum menggunakan tool.\n"
+"- Untuk tugas besar, kerjakan langkah demi langkah dan laporkan progresnya.\n\n"
+
+"Gaya respons:\n"
+"- Gunakan Bahasa Indonesia secara alami.\n"
+"- Untuk sapaan sederhana seperti 'hai', 'halo', 'pagi', atau 'makasih', balas singkat dan ramah.\n"
+"- Untuk pertanyaan teknis atau kompleks, berikan jawaban lengkap dan jelas.\n"
+"- Tetap fokus pada membantu pengguna, bukan roleplay.\n"
+
 )
 
+
+# ─── Warna terminal ───────────────────────────────────────────────────────────
+
+R       = "\033[0m"
+BOLD    = "\033[1m"
+DIM     = "\033[2m"
+CYAN    = "\033[96m"
+GREEN   = "\033[92m"
+YELLOW  = "\033[93m"
+RED     = "\033[91m"
+MAGENTA = "\033[95m"
+WHITE   = "\033[97m"
+
+def c(text, color): return f"{color}{text}{R}"
+def yn(prompt): return input(f"{YELLOW}⚠ {prompt} [y/N]: {R}").strip().lower() == "y"
+
+# ─── Whitelist direktori ──────────────────────────────────────────────────────
+
+ALLOWED_ROOT = Path(".").resolve()
+
+def set_allowed_root(path: Path):
+    global ALLOWED_ROOT
+    ALLOWED_ROOT = path.resolve()
+
+def check_path(path: str) -> tuple[Path, str]:
+    """Resolve path & pastikan berada di dalam ALLOWED_ROOT.
+    Return (resolved_path, error_msg). error_msg kosong jika aman."""
+    p = Path(path).expanduser()
+    if not p.is_absolute():
+        p = ALLOWED_ROOT / p
+    p = p.resolve()
+    try:
+        p.relative_to(ALLOWED_ROOT)
+    except ValueError:
+        return p, f"❌ Akses ditolak: '{p}' berada di luar direktori yang diizinkan ({ALLOWED_ROOT})"
+    return p, ""
+
+# ─── Config file (.env) ───────────────────────────────────────────────────────
+
 def load_config() -> dict:
-    """Muat konfigurasi dari environment variable."""
     return {
         "api_key":       os.environ.get("OPENROUTER_API_KEY", ""),
+        "provider":      os.environ.get("MY_AI_PROVIDER", ""),
         "default_model": os.environ.get("MY_AI_DEFAULT_MODEL", ""),
     }
 
 def save_config(data: dict):
-    """Simpan konfigurasi ke file .env."""
     env_file = Path(__file__).parent / ".env"
     try:
         lines = env_file.read_text(encoding="utf-8").splitlines() if env_file.exists() else []
         for key, val in data.items():
             env_key = {
                 "api_key":       "OPENROUTER_API_KEY",
+                "provider":      "MY_AI_PROVIDER",
                 "default_model": "MY_AI_DEFAULT_MODEL",
             }.get(key, key.upper())
             found = False

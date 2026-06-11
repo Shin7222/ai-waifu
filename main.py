@@ -1,97 +1,114 @@
 #!/usr/bin/env python3
 """
-My AI CLI — OpenRouter + Tool Calling
-Fitur: baca/tulis file, edit kode, web search, akses folder
+main.py — Entry point My AI CLI.
+Jalankan: python main.py
+
+Struktur proyek:
+  config.py   — konstanta, warna, persona, path safety, load/save config
+  voice.py    — VOICEVOX TTS
+  tools.py    — definisi & implementasi tools AI
+  api.py      — Ollama & OpenRouter streaming + agentic loop
+  history.py  — load/save/tampilkan history & sessions
+  ui.py       — pilih model, help text, save to txt
+  main.py     — (ini) provider setup & command loop
 """
 
-import os
-import sys
-import re
+import os, re, datetime
 from pathlib import Path
-import datetime
 
-try:
-    from dotenv import load_dotenv
-    load_dotenv(Path(__file__).parent / ".env")
-except ImportError:
-    pass  # python-dotenv tidak terinstall, skip
+import requests
 
-try:
-    import requests
-except ImportError:
-    print("❌ Jalankan: pip install requests")
-    sys.exit(1)
-
+import config
 from config import (
-    MODELS, 
-    PERSONA_NAMA, 
-    PERSONA_PROMPT, 
-    load_config, 
-    save_config
+    load_config, save_config,
+    set_allowed_root, PERSONA_NAMA, PERSONA_PROMPT,
+    BOLD, DIM, R, CYAN, GREEN, YELLOW, RED,
+    yn,
 )
-from utils import (
-    c, yn, help_text, 
-    YELLOW, RED, GREEN, CYAN, DIM, R, BOLD
-)
-from api import process_response
-from history import load_history, save_history, show_history, save_to_txt
+from api      import process_response
+from history  import load_history, save_history, show_history, list_sessions, load_session_messages
+from tools    import TOOLS
+from ui       import pilih_model, save_to_txt, help_text
+from voice    import voicevox_check, voicevox_speakers
+import voice
 
-def pilih_model(default_model: str = "") -> tuple:
-    """Pilih model AI."""
-    # Cari nomor default dari config
-    default_key = "1"
-    for k,(mid,_) in MODELS.items():
-        if mid == default_model:
-            default_key = k
-            break
 
-    print(f"{BOLD}Pilih model:{R}")
-    for k,(mid,desc) in MODELS.items():
-        marker = f"  {GREEN}← tersimpan{R}" if mid == default_model else ""
-        print(f"  {CYAN}{k}{R}. {desc}  {DIM}({mid}){R}{marker}")
-    print(f"  {CYAN}6{R}. Ketik model ID sendiri\n")
-    while True:
-        p = input(f"{DIM}Pilih [1-6, default={default_key}]: {R}").strip() or default_key
-        if p in MODELS:
-            mid, desc = MODELS[p]
-            save_config({"default_model": mid})
-            print(f"\n{GREEN}✓ {desc}{R}\n")
-            return mid, desc
-        elif p == "6":
-            mid = input("Model ID: ").strip()
-            if mid:
-                save_config({"default_model": mid})
-                print(f"\n{GREEN}✓ {mid}{R}\n")
-                return mid, mid
+def _setup_provider(cfg: dict) -> tuple[str, str]:
+    """Pilih provider & siapkan API key. Return (provider, api_key)."""
+    saved_provider = cfg.get("provider", "")
+    ollama_ok      = False
+
+    try:
+        ping      = requests.get("http://localhost:11434/api/tags", timeout=3)
+        ollama_ok = ping.ok
+    except Exception:
+        pass
+
+    print(f"{BOLD}Pilih provider:{R}")
+    ollama_mark = f"  {GREEN}← terdeteksi{R}" if ollama_ok else f"  {DIM}(tidak berjalan){R}"
+    or_mark     = f"  {GREEN}← tersimpan{R}" if saved_provider == "openrouter" else ""
+    ol_mark     = (f"  {GREEN}← tersimpan{R}" if saved_provider == "ollama" else "") + ollama_mark
+    print(f"  {CYAN}1{R}. Ollama  (lokal){ol_mark}")
+    print(f"  {CYAN}2{R}. OpenRouter (cloud){or_mark}\n")
+
+    default_prov = "1" if (saved_provider == "ollama" or not saved_provider) else "2"
+    prov_input   = input(f"{DIM}Pilih [1/2, default={default_prov}]: {R}").strip() or default_prov
+
+    if prov_input == "2":
+        config.PROVIDER = "openrouter"
+        save_config({"provider": "openrouter"})
+        print(f"\n{GREEN}✓ Provider: OpenRouter{R}")
+
+        api_key = cfg.get("api_key", "")
+        if api_key:
+            masked = api_key[:8] + "…" + api_key[-4:]
+            print(f"  {DIM}API key tersimpan: {masked}{R}")
+            if input(f"  Ganti API key? [y/N]: ").strip().lower() == "y":
+                api_key = input(f"  Masukkan OPENROUTER_API_KEY baru: ").strip()
+                if api_key:
+                    save_config({"api_key": api_key})
+                    print(f"  {GREEN}✓ API key disimpan.{R}")
         else:
-            print(f"{RED}Tidak valid.{R}")
+            print(f"\n  {YELLOW}⚠ OPENROUTER_API_KEY belum diset.{R}")
+            print(f"  Daftar gratis di {CYAN}https://openrouter.ai/keys{R}")
+            api_key = input(f"  Masukkan API key (kosongkan=skip): ").strip()
+            if api_key:
+                save_config({"api_key": api_key})
+                print(f"  {GREEN}✓ API key disimpan ke .env{R}")
+            else:
+                print(f"  {DIM}Lanjut tanpa API key (akan error saat memanggil model).{R}")
+        print()
+        return "openrouter", api_key
+
+    else:
+        config.PROVIDER = "ollama"
+        save_config({"provider": "ollama"})
+        if ollama_ok:
+            print(f"{GREEN}✓ Provider: Ollama (terhubung){R}")
+        else:
+            print(f"{YELLOW}⚠ Provider: Ollama — server tidak terdeteksi. Jalankan: ollama serve{R}")
+            if not yn("Tetap lanjutkan?"):
+                return "ollama", ""
+        print()
+        return "ollama", ""
+
 
 def main():
-    """Fungsi utama untuk menjalankan My AI CLI."""
     print(f"\n{BOLD}{CYAN}{'═'*54}{R}")
-    print(f"{BOLD}{CYAN}   🤖  My AI CLI  —  OpenRouter + Tools{R}")
+    print(f"{BOLD}{CYAN}   🤖  My AI CLI  —  Ollama / OpenRouter + Tools{R}")
     print(f"{BOLD}{CYAN}{'═'*54}{R}\n")
 
-    cfg     = load_config()
-    api_key = os.environ.get("OPENROUTER_API_KEY","").strip() or cfg.get("api_key","")
-    if not api_key:
-        print(f"{YELLOW}API key belum disimpan.{R}")
-        print(f"{DIM}Daftar gratis: https://openrouter.ai/keys{R}\n")
-        api_key = input("Masukkan OPENROUTER_API_KEY: ").strip()
-        if not api_key:
-            print(f"{RED}❌ API key diperlukan.{R}")
-            return
-        save_config({"api_key": api_key})
-        env_path = Path(__file__).parent / ".env"
-        print(f"{GREEN}✓ API key disimpan di {env_path}{R}\n")
-    else:
-        print(f"{DIM}API key loaded ✓{R}")
+    cfg = load_config()
 
-    default_model = cfg.get("default_model", "")
+    provider, api_key = _setup_provider(cfg)
+
+    default_model        = cfg.get("default_model", "")
     model_id, model_desc = pilih_model(default_model)
-    persona_nama, sys_prompt = PERSONA_NAMA, PERSONA_PROMPT
+    persona_nama         = PERSONA_NAMA
+    sys_prompt           = PERSONA_PROMPT
 
     cwd = Path(".").resolve()
+    set_allowed_root(cwd)
     print(f"{DIM}Working directory: {cwd}{R}")
     print(f"{DIM}Ketik /help untuk melihat perintah.{R}\n")
 
@@ -105,11 +122,13 @@ def main():
             "Gunakan tools ini secara proaktif untuk membantu user. "
             "Sebelum menulis atau mengedit file, selalu jelaskan apa yang akan kamu lakukan. "
             "Untuk tugas besar, pecah menjadi langkah-langkah kecil."
-        )
+        ),
     }
-    messages     = [system_msg]
-    all_history  = load_history()
+    messages            = [system_msg]
+    all_history         = load_history()
+    current_session_idx = None
 
+    # ── Command loop ──────────────────────────────────────────────────────────
     while True:
         try:
             user_input = input(f"\n{BOLD}Kamu ▸{R} ").strip()
@@ -117,44 +136,45 @@ def main():
             print(f"\n\n{YELLOW}Sampai jumpa!{R}\n")
             break
 
-        if not user_input: 
+        if not user_input:
             continue
 
         if user_input.startswith("/"):
             cmd = user_input.lower().split()[0]
 
-            if cmd == "/app":
-                from my_ai_cli.apps import run_app, list_apps
-                parts = user_input.split(maxsplit=1)
-                if len(parts) > 1:
-                    run_app(parts[1])
-                else:
-                    apps = [a.replace('.py', '') for a in list_apps()]
-                    print(f"\n{BOLD}Aplikasi tersedia:{R}")
-                    for a in apps:
-                        print(f"  - {a}")
-                    print(f"\nCara gunakan: /app <nama_app>\n")
-                continue
-
-            elif cmd == "/exit":
+            if cmd == "/exit":
                 print(f"\n{YELLOW}Sampai jumpa!{R}\n")
                 break
 
             elif cmd == "/clear":
-                messages = [system_msg]
+                messages            = [system_msg]
+                current_session_idx = None
                 print(f"\n{GREEN}✓ Konteks dihapus.{R}")
 
             elif cmd == "/history":
                 show_history(all_history)
 
+            elif cmd == "/sessions":
+                shown = list_sessions(all_history)
+                if shown:
+                    sel = input(f"  {DIM}Nomor sesi (kosongkan=batal): {R}").strip()
+                    if sel.isdigit() and 1 <= int(sel) <= len(shown):
+                        entry               = shown[int(sel) - 1]
+                        messages            = load_session_messages(entry, system_msg)
+                        current_session_idx = all_history.index(entry)
+                        n = len([m for m in messages if m["role"] in ("user", "assistant")])
+                        print(f"\n{GREEN}✓ Sesi dilanjutkan ({n} pesan dimuat).{R}")
+                    else:
+                        print(f"\n{YELLOW}Dibatalkan.{R}")
+
             elif cmd == "/persona":
                 print(f"\n{DIM}Persona tunggal aktif: {CYAN}{PERSONA_NAMA}{R}\n")
 
             elif cmd == "/model":
-                default_model = cfg.get("default_model", "")
-                model_id, model_desc = pilih_model(default_model)
-                messages = [system_msg]
-                print(f"{DIM}Konteks direset.{R}")
+                model_id, model_desc = pilih_model(cfg.get("default_model", ""))
+                messages             = [system_msg]
+                current_session_idx  = None
+                print(f"{DIM}Konteks direset. Provider: {'OpenRouter' if config.PROVIDER == 'openrouter' else 'Ollama'}{R}")
 
             elif cmd == "/cwd":
                 parts = user_input.split(maxsplit=1)
@@ -163,10 +183,11 @@ def main():
                     if new_cwd.is_dir():
                         os.chdir(new_cwd)
                         cwd = new_cwd
+                        set_allowed_root(cwd)
                         system_msg["content"] = re.sub(
                             r"Working directory saat ini: .*",
                             f"Working directory saat ini: {cwd}",
-                            system_msg["content"]
+                            system_msg["content"],
                         )
                         print(f"\n{GREEN}✓ Pindah ke: {cwd}{R}")
                     else:
@@ -179,17 +200,17 @@ def main():
                         if new_cwd.is_dir():
                             os.chdir(new_cwd)
                             cwd = new_cwd
+                            set_allowed_root(cwd)
                             system_msg["content"] = re.sub(
                                 r"Working directory saat ini: .*",
                                 f"Working directory saat ini: {cwd}",
-                                system_msg["content"]
+                                system_msg["content"],
                             )
                             print(f"{GREEN}✓ Pindah ke: {cwd}{R}")
                         else:
                             print(f"{RED}❌ Tidak ditemukan.{R}")
 
             elif cmd == "/tools":
-                from .tools import TOOLS
                 print(f"\n{BOLD}Tools tersedia:{R}")
                 for t in TOOLS:
                     fn = t["function"]
@@ -198,43 +219,100 @@ def main():
 
             elif cmd == "/save":
                 chat = [m for m in messages if m["role"] != "system"]
-                if chat: 
+                if chat:
                     save_to_txt(messages, persona_nama, model_id)
-                else: 
+                else:
                     print(f"\n{YELLOW}Belum ada percakapan.{R}")
 
             elif cmd == "/apikey":
-                new_key = input(f"  Masukkan API key baru: ").strip()
-                if new_key:
-                    api_key = new_key
-                    save_config({"api_key": new_key})
-                    print(f"\n{GREEN}✓ API key diperbarui dan disimpan.{R}\n")
+                if config.PROVIDER == "ollama":
+                    print(f"\n{YELLOW}Ollama berjalan lokal, tidak memerlukan API key.{R}")
+                    print(f"{DIM}Untuk menggunakan OpenRouter, restart dan pilih provider OpenRouter.{R}\n")
                 else:
-                    print(f"\n{YELLOW}Dibatalkan.{R}\n")
+                    parts = user_input.split(maxsplit=1)
+                    if len(parts) > 1:
+                        new_key = parts[1].strip()
+                    else:
+                        masked  = api_key[:8] + "…" + api_key[-4:] if api_key else "(belum diset)"
+                        print(f"\n  API key saat ini: {DIM}{masked}{R}")
+                        new_key = input(f"  Masukkan OPENROUTER_API_KEY baru (kosongkan=batal): ").strip()
+                    if new_key:
+                        api_key = new_key
+                        save_config({"api_key": api_key})
+                        print(f"\n{GREEN}✓ API key disimpan.{R}\n")
+                    else:
+                        print(f"\n{YELLOW}Dibatalkan.{R}\n")
+
+            elif cmd == "/voice":
+                parts = user_input.split(maxsplit=1)
+                arg   = parts[1].lower() if len(parts) > 1 else ""
+
+                if arg == "on":
+                    if not voicevox_check():
+                        print(f"\n{RED}❌ VOICEVOX tidak terdeteksi di {config.VOICEVOX_URL}.{R}")
+                        print(f"{DIM}Buka aplikasi VOICEVOX terlebih dahulu, lalu coba lagi.{R}\n")
+                    else:
+                        config.VOICE_ENABLED = True
+                        print(f"\n{GREEN}✓ Voice aktif. Setiap balasan AI akan dibacakan.{R}\n")
+                elif arg == "off":
+                    config.VOICE_ENABLED = False
+                    print(f"\n{GREEN}✓ Voice nonaktif.{R}\n")
+                elif arg == "list":
+                    speakers = voicevox_speakers()
+                    if not speakers:
+                        print(f"\n{RED}❌ Tidak bisa ambil daftar speaker. VOICEVOX terbuka?{R}\n")
+                    else:
+                        print(f"\n{BOLD}Speaker VOICEVOX tersedia:{R}")
+                        for sid, name in speakers:
+                            mark = f"  {GREEN}← aktif{R}" if sid == config.VOICEVOX_SPEAKER else ""
+                            print(f"  {CYAN}{sid:>3}{R}  {name}{mark}")
+                        print(f"\n{DIM}Ganti dengan: /voice set <id>{R}\n")
+                elif arg.startswith("set"):
+                    sub = user_input.split()
+                    if len(sub) >= 3 and sub[2].isdigit():
+                        config.VOICEVOX_SPEAKER = int(sub[2])
+                        print(f"\n{GREEN}✓ Speaker diubah ke ID {config.VOICEVOX_SPEAKER}.{R}")
+                        print(f"{DIM}Lihat nama: /voice list{R}\n")
+                    else:
+                        print(f"\n{YELLOW}Pakai: /voice set <id_speaker>{R}\n")
+                else:
+                    status    = f"{GREEN}AKTIF{R}" if config.VOICE_ENABLED else f"{DIM}nonaktif{R}"
+                    connected = f"{GREEN}terhubung{R}" if voicevox_check() else f"{RED}tidak terhubung{R}"
+                    print(f"\n  Voice   : {status}")
+                    print(f"  VOICEVOX: {connected}  {DIM}({config.VOICEVOX_URL}){R}")
+                    print(f"  Speaker : {config.VOICEVOX_SPEAKER}")
+                    print(f"\n{DIM}Pakai: /voice on | off | list | set <id>{R}\n")
 
             elif cmd == "/info":
-                print(f"\n  Model  : {CYAN}{model_desc}{R}  {DIM}({model_id}){R}")
-                print(f"  Persona: {CYAN}{PERSONA_NAMA}{R}")
-                print(f"  CWD    : {CYAN}{cwd}{R}\n")
+                voice_status = f"{GREEN}ON{R}" if config.VOICE_ENABLED else f"{DIM}OFF{R}"
+                prov_label   = f"{CYAN}OpenRouter{R}" if config.PROVIDER == "openrouter" else f"{CYAN}Ollama{R}"
+                print(f"\n  Provider: {prov_label}")
+                print(f"  Model   : {CYAN}{model_desc}{R}  {DIM}({model_id}){R}")
+                print(f"  Persona : {CYAN}{PERSONA_NAMA}{R}")
+                print(f"  CWD     : {CYAN}{cwd}{R}")
+                print(f"  Voice   : {voice_status}\n")
 
             elif cmd == "/help":
                 help_text()
+
             else:
                 print(f"\n{RED}Tidak dikenal. Ketik /help.{R}")
             continue
 
-        # ── Kirim ke API ──
+        # ── Kirim ke AI ───────────────────────────────────────────────────────
         messages.append({"role": "user", "content": user_input})
-        print(f"\n{DIM}Berpikir...{R}", end="\r", flush=True)
 
         try:
-            reply = process_response(api_key, model_id, messages)
+            process_response(api_key, model_id, messages)
         except ValueError as e:
             print(f"\n{RED}❌ {e}{R}\n")
             messages.pop()
             continue
         except requests.exceptions.ConnectionError:
-            print(f"\n{RED}❌ Tidak bisa terhubung. Cek internet.{R}\n")
+            if config.PROVIDER == "openrouter":
+                print(f"\n{RED}❌ Tidak bisa terhubung ke OpenRouter. Cek koneksi internet.{R}\n")
+            else:
+                print(f"\n{RED}❌ Tidak bisa terhubung ke Ollama. Pastikan 'ollama serve' berjalan.{R}\n")
             messages.pop()
             continue
         except Exception as e:
@@ -242,16 +320,11 @@ def main():
             messages.pop()
             continue
 
-        print(" " * 30, end="\r")
-        if reply:
-            print(f"\n{CYAN}{BOLD}AI ▸{R} {reply}\n")
+        print()
 
-        # Simpan history
-        chat_msgs = [
-            m for m in messages 
-            if m["role"] not in ("system","tool") and not m.get("tool_calls")
-        ]
-        first_user = next((m["content"] for m in chat_msgs if m["role"]=="user"), "")
+        # Simpan ke history
+        chat_msgs  = [m for m in messages if m["role"] not in ("system", "tool") and not m.get("tool_calls")]
+        first_user = next((m["content"] for m in chat_msgs if m["role"] == "user"), "")
         entry = {
             "timestamp":  datetime.datetime.now().isoformat(),
             "persona":    persona_nama,
@@ -259,18 +332,16 @@ def main():
             "user_first": first_user,
             "messages":   [m for m in messages if m["role"] != "system"],
         }
-        if len(chat_msgs) <= 2:
+        if current_session_idx is not None and 0 <= current_session_idx < len(all_history):
+            entry["user_first"]                  = all_history[current_session_idx].get("user_first", first_user)
+            all_history[current_session_idx]      = entry
+        elif len(chat_msgs) <= 2:
             all_history.append(entry)
+            current_session_idx = len(all_history) - 1
         elif all_history:
             all_history[-1] = entry
         save_history(all_history)
 
-def cli():
-    """Entry point untuk CLI."""
-    try:
-        main()
-    except KeyboardInterrupt:
-        print(f"\n\n{YELLOW}Sampai jumpa!{R}\n")
 
 if __name__ == "__main__":
-    cli()
+    main()
