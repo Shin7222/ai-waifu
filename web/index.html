@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="UTF-8" />
+    <title>My AI — Live2D Avatar</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        background: transparent;
+        overflow: hidden;
+      }
+      #canvas-container {
+        width: 100vw;
+        height: 100vh;
+      }
+      #status {
+        position: fixed;
+        top: 8px;
+        left: 8px;
+        font-family: monospace;
+        font-size: 12px;
+        color: #0f0;
+        background: rgba(0, 0, 0, 0.4);
+        padding: 4px 8px;
+        border-radius: 4px;
+        z-index: 10;
+      }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/pixi.js@6.5.10/dist/browser/pixi.min.js"></script>
+    <script src="https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js"></script>
+    <script>
+      // Fallback jika CDN resmi gagal
+      if (typeof Live2DCubismCore === "undefined") {
+        document.write(
+          '<script src="https://unpkg.com/live2dcubismcore@0.0.1/live2dcubismcore.min.js"><\/script>',
+        );
+      }
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/pixi-live2d-display@0.4.0/dist/cubism4.min.js"></script>
+  </head>
+  <body>
+    <div id="status">Connecting…</div>
+    <div id="canvas-container"></div>
+
+    <script>
+      const statusEl = document.getElementById("status");
+
+      // ── PIXI setup ─────────────────────────────────────────────────────────────
+      const app = new PIXI.Application({
+        view: (() => {
+          const c = document.createElement("canvas");
+          document.getElementById("canvas-container").appendChild(c);
+          return c;
+        })(),
+        resizeTo: window,
+        backgroundAlpha: 0,
+        antialias: true,
+      });
+
+      app.stage.interactive = true;
+      app.stage.hitArea = app.renderer.screen;
+
+      let model = null;
+      let mouthParamId = "ParamMouthOpenY";
+
+      // ── Drag state ─────────────────────────────────────────────────────────────
+      let dragging = false;
+      let dragOffsetX = 0,
+        dragOffsetY = 0;
+
+      (async () => {
+        // Tunggu Cubism Core & PIXI.live2d siap (maks 5 detik)
+        const waitFor = (check, ms = 5000, step = 50) =>
+          new Promise((resolve, reject) => {
+            const start = Date.now();
+            const iv = setInterval(() => {
+              if (check()) {
+                clearInterval(iv);
+                resolve();
+              } else if (Date.now() - start > ms) {
+                clearInterval(iv);
+                reject(new Error("timeout"));
+              }
+            }, step);
+          });
+
+        try {
+          await waitFor(() => typeof Live2DCubismCore !== "undefined");
+          await waitFor(
+            () => window.PIXI && PIXI.live2d && PIXI.live2d.Live2DModel,
+          );
+
+          model = await PIXI.live2d.Live2DModel.from(
+            "/model/witch/model.model3.json",
+          );
+          app.stage.addChild(model);
+
+          // Fit & center
+          function layout() {
+            const scale =
+              Math.min(
+                app.screen.width / model.width,
+                app.screen.height / model.height,
+              ) * 0.95;
+            model.scale.set(scale);
+            model.x = (app.screen.width - model.width * scale) / 2;
+            model.y = (app.screen.height - model.height * scale) / 2 + 30;
+            app.stage.hitArea = app.renderer.screen;
+          }
+          layout();
+          window.addEventListener("resize", layout);
+
+          // ── Buat model bisa di-drag dengan mouse ────────────────────────────
+          model.interactive = true;
+          model.buttonMode = true;
+          model.cursor = "grab";
+
+          model.on("pointerdown", (e) => {
+            dragging = true;
+            model.cursor = "grabbing";
+            const pos = e.data.global;
+            dragOffsetX = pos.x - model.x;
+            dragOffsetY = pos.y - model.y;
+          });
+
+          app.stage.on("pointermove", (e) => {
+            if (!dragging) return;
+            const pos = e.data.global;
+            model.x = pos.x - dragOffsetX;
+            model.y = pos.y - dragOffsetY;
+          });
+
+          app.stage.on("pointerup", () => {
+            dragging = false;
+            model.cursor = "grab";
+          });
+          app.stage.on("pointerupoutside", () => {
+            dragging = false;
+            model.cursor = "grab";
+          });
+
+          statusEl.textContent = "Model loaded ✓";
+          setTimeout(() => (statusEl.style.display = "none"), 2000);
+        } catch (e) {
+          statusEl.textContent = "Model load error: " + e.message;
+          statusEl.style.color = "#f55";
+          console.error(e);
+        }
+      })();
+
+      // ── Lip sync via Web Audio API ────────────────────────────────────────────
+      let audioCtx = null;
+      let analyser = null;
+      let lipSyncRAF = null;
+
+      function setupAudioContext() {
+        if (!audioCtx) {
+          audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+          analyser = audioCtx.createAnalyser();
+          analyser.fftSize = 256;
+          analyser.smoothingTimeConstant = 0.6;
+        }
+      }
+
+      function playAudioWithLipSync(base64Wav) {
+        setupAudioContext();
+
+        const binary = atob(base64Wav);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+
+        audioCtx.decodeAudioData(
+          bytes.buffer.slice(0),
+          (buffer) => {
+            const source = audioCtx.createBufferSource();
+            source.buffer = buffer;
+            source.connect(analyser);
+            analyser.connect(audioCtx.destination);
+            source.start(0);
+
+            const dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+            function tick() {
+              analyser.getByteTimeDomainData(dataArray);
+              // Hitung RMS amplitude
+              let sumSquares = 0;
+              for (let i = 0; i < dataArray.length; i++) {
+                const norm = (dataArray[i] - 128) / 128;
+                sumSquares += norm * norm;
+              }
+              const rms = Math.sqrt(sumSquares / dataArray.length);
+              const mouthOpen = Math.min(1, rms * 6); // amplifikasi agar mulut terlihat gerak
+
+              if (
+                model &&
+                model.internalModel &&
+                model.internalModel.coreModel
+              ) {
+                model.internalModel.coreModel.setParameterValueById(
+                  mouthParamId,
+                  mouthOpen,
+                );
+              }
+              lipSyncRAF = requestAnimationFrame(tick);
+            }
+            tick();
+
+            source.onended = () => {
+              cancelAnimationFrame(lipSyncRAF);
+              if (
+                model &&
+                model.internalModel &&
+                model.internalModel.coreModel
+              ) {
+                model.internalModel.coreModel.setParameterValueById(
+                  mouthParamId,
+                  0,
+                );
+              }
+            };
+          },
+          (err) => console.error("decodeAudioData error", err),
+        );
+      }
+
+      // ── WebSocket ke server CLI ──────────────────────────────────────────────
+      function connectWS() {
+        const ws = new WebSocket(`ws://${location.host}/ws`);
+
+        ws.onopen = () => {
+          statusEl.textContent = "Connected ✓";
+        };
+
+        ws.onmessage = (ev) => {
+          try {
+            const raw = typeof ev.data === "string" ? ev.data : "";
+            if (!raw) return;
+            const msg = JSON.parse(raw);
+            if (msg.type === "speak" && msg.audio_b64) {
+              playAudioWithLipSync(msg.audio_b64);
+            } else if (msg.type === "expression" && model) {
+              model.expression(msg.name);
+            }
+          } catch (e) {
+            console.error("WS message error", e, ev.data);
+          }
+        };
+
+        ws.onclose = () => {
+          statusEl.style.display = "block";
+          statusEl.textContent = "Disconnected — retry in 2s…";
+          setTimeout(connectWS, 2000);
+        };
+
+        ws.onerror = () => ws.close();
+      }
+      connectWS();
+
+      // Browser butuh interaksi user pertama untuk AudioContext (autoplay policy)
+      document.body.addEventListener(
+        "click",
+        () => {
+          setupAudioContext();
+          if (audioCtx.state === "suspended") audioCtx.resume();
+        },
+        { once: true },
+      );
+    </script>
+  </body>
+</html>
