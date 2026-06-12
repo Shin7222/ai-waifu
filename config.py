@@ -40,7 +40,7 @@ MODELS_OPENROUTER = {
     "4": ("google/gemma-3-27b-it:free",              "Gemma 3 27B (free)"),
     "5": ("deepseek/deepseek-r1:free",               "DeepSeek R1 (free)"),
     "6": ("openai/gpt-4o-mini",                      "GPT-4o Mini"),
-    "7": ("anthropic/claude-sonnet-4-5",             "Claude Sonnet 4.5"),
+    "7": ("nex-agi/nex-n2-pro:free",             "nex-agi/nex-n2-pro:free"),
     "8": ("google/gemini-2.0-flash-exp:free",        "Gemini 2.0 Flash (free)"),
 }
 
@@ -48,7 +48,7 @@ MODELS_OPENROUTER = {
 
 VOICEVOX_URL     = "http://127.0.0.1:50021"
 VOICEVOX_SPEAKER = 3       # 3 = Zundamon Normal
-VOICE_ENABLED    = False   # toggle via /voice
+VOICE_ENABLED    = True  # toggle via /voice
 
 # ─── Persona ──────────────────────────────────────────────────────────────────
 

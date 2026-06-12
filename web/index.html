@@ -1,58 +1,154 @@
 <!doctype html>
+
 <html lang="id">
   <head>
     <meta charset="UTF-8" />
-    <title>My AI — Live2D Avatar</title>
+    <title>Fern AI Assistant</title>
+
     <style>
       html,
       body {
         margin: 0;
         padding: 0;
+        width: 100%;
         height: 100%;
-        background: transparent;
         overflow: hidden;
+        background: transparent;
       }
+
       #canvas-container {
         width: 100vw;
         height: 100vh;
       }
+
       #status {
         position: fixed;
-        top: 8px;
-        left: 8px;
-        font-family: monospace;
-        font-size: 12px;
+        top: 10px;
+        left: 10px;
+        background: rgba(0, 0, 0, 0.5);
         color: #0f0;
-        background: rgba(0, 0, 0, 0.4);
-        padding: 4px 8px;
-        border-radius: 4px;
-        z-index: 10;
+        padding: 6px 10px;
+        border-radius: 6px;
+        font-size: 12px;
+        font-family: monospace;
+        z-index: 9999;
+      }
+
+      #chatlog {
+        position: fixed;
+        right: 10px;
+        bottom: 70px;
+        width: 320px;
+        height: 260px;
+        overflow-y: auto;
+        background: rgba(0, 0, 0, 0.55);
+        color: white;
+        padding: 10px;
+        border-radius: 10px;
+        font-family: sans-serif;
+        z-index: 9999;
+      }
+
+      #chatbar {
+        position: fixed;
+        right: 10px;
+        bottom: 10px;
+        display: flex;
+        gap: 5px;
+        z-index: 9999;
+      }
+
+      #msg {
+        width: 250px;
+        padding: 8px;
+      }
+
+      button {
+        padding: 8px 12px;
+        cursor: pointer;
       }
     </style>
+
     <script src="https://cdn.jsdelivr.net/npm/pixi.js@6.5.10/dist/browser/pixi.min.js"></script>
+
     <script src="https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js"></script>
-    <script>
-      // Fallback jika CDN resmi gagal
-      if (typeof Live2DCubismCore === "undefined") {
-        document.write(
-          '<script src="https://unpkg.com/live2dcubismcore@0.0.1/live2dcubismcore.min.js"><\/script>',
-        );
-      }
-    </script>
+
     <script src="https://cdn.jsdelivr.net/npm/pixi-live2d-display@0.4.0/dist/cubism4.min.js"></script>
   </head>
+
   <body>
-    <div id="status">Connecting…</div>
+    <div id="status">Connecting...</div>
+
     <div id="canvas-container"></div>
+
+    <div id="chatlog"></div>
+
+    <div id="chatbar">
+      <input id="msg" placeholder="Tanya Fern..." />
+      <button onclick="sendMessage()">Send</button>
+    </div>
 
     <script>
       const statusEl = document.getElementById("status");
 
-      // ── PIXI setup ─────────────────────────────────────────────────────────────
+      function addMessage(sender, text) {
+        const log = document.getElementById("chatlog");
+
+        const div = document.createElement("div");
+
+        div.innerHTML = `<b>${sender}:</b> ${text}`;
+
+        log.appendChild(div);
+
+        log.scrollTop = log.scrollHeight;
+      }
+
+      async function sendMessage() {
+        const input = document.getElementById("msg");
+
+        const msg = input.value.trim();
+
+        if (!msg) return;
+
+        addMessage("You", msg);
+
+        input.value = "";
+
+        try {
+          const response = await fetch("/chat", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              message: msg,
+            }),
+          });
+
+          const data = await response.json();
+
+          addMessage("Fern", data.response);
+        } catch (err) {
+          console.error(err);
+
+          addMessage("System", "Koneksi gagal");
+        }
+      }
+
+      document.getElementById("msg").addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          sendMessage();
+        }
+      });
+
+      // PIXI
+
       const app = new PIXI.Application({
         view: (() => {
           const c = document.createElement("canvas");
+
           document.getElementById("canvas-container").appendChild(c);
+
           return c;
         })(),
         resizeTo: window,
@@ -60,139 +156,250 @@
         antialias: true,
       });
 
-      app.stage.interactive = true;
-      app.stage.hitArea = app.renderer.screen;
-
       let model = null;
+
       let mouthParamId = "ParamMouthOpenY";
 
-      // ── Drag state ─────────────────────────────────────────────────────────────
-      let dragging = false;
-      let dragOffsetX = 0,
-        dragOffsetY = 0;
+      // Mapping label emosi dari backend -> nama file expression Fern (tanpa ekstensi)
+      const EXPRESSION_MAP = {
+        happy: "sy",
+        sad: "lh",
+        angry: "lh",
+        normal: "sq",
+        neutral: "sq",
+        error: "sq",
+      };
 
-      (async () => {
-        // Tunggu Cubism Core & PIXI.live2d siap (maks 5 detik)
-        const waitFor = (check, ms = 5000, step = 50) =>
-          new Promise((resolve, reject) => {
-            const start = Date.now();
-            const iv = setInterval(() => {
-              if (check()) {
-                clearInterval(iv);
-                resolve();
-              } else if (Date.now() - start > ms) {
-                clearInterval(iv);
-                reject(new Error("timeout"));
-              }
-            }, step);
-          });
+      function applyExpression(emotionLabel) {
+        if (!model || !model.internalModel) return;
+
+        const exprName = EXPRESSION_MAP[emotionLabel] || "sq";
 
         try {
-          await waitFor(() => typeof Live2DCubismCore !== "undefined");
-          await waitFor(
-            () => window.PIXI && PIXI.live2d && PIXI.live2d.Live2DModel,
+          // pixi-live2d-display: expression manager tersedia via internalModel
+          if (
+            model.internalModel.motionManager &&
+            model.internalModel.motionManager.expressionManager
+          ) {
+            model.internalModel.motionManager.expressionManager.setExpression(
+              exprName,
+            );
+          } else if (model.expression) {
+            // fallback API beberapa versi
+            model.expression(exprName);
+          }
+          statusEl.textContent = `Expression: ${exprName} (${emotionLabel})`;
+        } catch (err) {
+          console.error("Expression error:", err);
+        }
+      }
+
+      let dragging = false;
+      let dragOffsetX = 0;
+      let dragOffsetY = 0;
+
+      (async () => {
+        try {
+          model = await PIXI.live2d.Live2DModel.from(
+            "/model/fern/fern.model3.json",
           );
 
-          model = await PIXI.live2d.Live2DModel.from(
-            "/model/witch/model.model3.json",
-          );
           app.stage.addChild(model);
 
-          // Fit & center
-          function layout() {
-            const scale =
-              Math.min(
-                app.screen.width / model.width,
-                app.screen.height / model.height,
-              ) * 0.95;
-            model.scale.set(scale);
-            model.x = (app.screen.width - model.width * scale) / 2;
-            model.y = (app.screen.height - model.height * scale) / 2 + 30;
-            app.stage.hitArea = app.renderer.screen;
-          }
-          layout();
-          window.addEventListener("resize", layout);
+          // posisi awal
+          model.anchor.set(0.5, 0.5);
 
-          // ── Buat model bisa di-drag dengan mouse ────────────────────────────
+          let currentScale = 0.25;
+
+          model.scale.set(currentScale);
+
+          model.x = app.screen.width / 2;
+          model.y = app.screen.height / 2;
+
+          // ====================
+          // DRAG & DROP
+          // ====================
+
+          let dragging = false;
+
           model.interactive = true;
           model.buttonMode = true;
+
           model.cursor = "grab";
+
+          model
+            .on("pointerdown", (event) => {
+              dragging = true;
+
+              model.cursor = "grabbing";
+
+              const pos = event.data.getLocalPosition(model.parent);
+
+              model.dragOffsetX = pos.x - model.x;
+              model.dragOffsetY = pos.y - model.y;
+            })
+
+            .on("pointerup", () => {
+              dragging = false;
+
+              model.cursor = "grab";
+            })
+
+            .on("pointerupoutside", () => {
+              dragging = false;
+
+              model.cursor = "grab";
+            })
+
+            .on("pointermove", (event) => {
+              if (!dragging) return;
+
+              const pos = event.data.getLocalPosition(model.parent);
+
+              model.x = pos.x - model.dragOffsetX;
+              model.y = pos.y - model.dragOffsetY;
+            });
+
+          // ====================
+          // ZOOM WHEEL
+          // ====================
+
+          window.addEventListener(
+            "wheel",
+            (e) => {
+              e.preventDefault();
+
+              if (e.deltaY < 0) {
+                currentScale *= 1.1;
+              } else {
+                currentScale *= 0.9;
+              }
+
+              currentScale = Math.max(0.05, Math.min(3, currentScale));
+
+              model.scale.set(currentScale);
+            },
+            { passive: false },
+          );
+
+          // ====================
+          // DOUBLE CLICK RESET
+          // ====================
+
+          window.addEventListener("dblclick", () => {
+            currentScale = 0.25;
+
+            model.scale.set(currentScale);
+
+            model.x = app.screen.width / 2;
+
+            model.y = app.screen.height / 2;
+          });
+
+          function layout() {
+            if (!model) return;
+
+            app.renderer.resize(window.innerWidth, window.innerHeight);
+          }
+
+          layout();
+
+          window.addEventListener("resize", layout);
+
+          model.interactive = true;
+          model.buttonMode = true;
 
           model.on("pointerdown", (e) => {
             dragging = true;
-            model.cursor = "grabbing";
+
             const pos = e.data.global;
+
             dragOffsetX = pos.x - model.x;
+
             dragOffsetY = pos.y - model.y;
           });
 
           app.stage.on("pointermove", (e) => {
             if (!dragging) return;
+
             const pos = e.data.global;
+
             model.x = pos.x - dragOffsetX;
+
             model.y = pos.y - dragOffsetY;
           });
 
           app.stage.on("pointerup", () => {
             dragging = false;
-            model.cursor = "grab";
-          });
-          app.stage.on("pointerupoutside", () => {
-            dragging = false;
-            model.cursor = "grab";
           });
 
-          statusEl.textContent = "Model loaded ✓";
-          setTimeout(() => (statusEl.style.display = "none"), 2000);
-        } catch (e) {
-          statusEl.textContent = "Model load error: " + e.message;
-          statusEl.style.color = "#f55";
-          console.error(e);
+          app.stage.on("pointerupoutside", () => {
+            dragging = false;
+          });
+
+          statusEl.textContent = "Fern Loaded ✓";
+        } catch (err) {
+          console.error(err);
+
+          statusEl.textContent = "Model Error";
         }
       })();
 
-      // ── Lip sync via Web Audio API ────────────────────────────────────────────
       let audioCtx = null;
       let analyser = null;
       let lipSyncRAF = null;
 
-      function setupAudioContext() {
-        if (!audioCtx) {
-          audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-          analyser = audioCtx.createAnalyser();
-          analyser.fftSize = 256;
-          analyser.smoothingTimeConstant = 0.6;
-        }
+      function setupAudio() {
+        if (audioCtx) return;
+
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+        analyser = audioCtx.createAnalyser();
+
+        analyser.fftSize = 256;
       }
 
       function playAudioWithLipSync(base64Wav) {
-        setupAudioContext();
+        setupAudio();
 
         const binary = atob(base64Wav);
+
         const bytes = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+
+        for (let i = 0; i < binary.length; i++) {
+          bytes[i] = binary.charCodeAt(i);
+        }
 
         audioCtx.decodeAudioData(
-          bytes.buffer.slice(0),
+          bytes.buffer,
+
           (buffer) => {
             const source = audioCtx.createBufferSource();
+
             source.buffer = buffer;
+
             source.connect(analyser);
+
             analyser.connect(audioCtx.destination);
-            source.start(0);
+
+            source.start();
 
             const dataArray = new Uint8Array(analyser.frequencyBinCount);
 
             function tick() {
               analyser.getByteTimeDomainData(dataArray);
-              // Hitung RMS amplitude
-              let sumSquares = 0;
+
+              let sum = 0;
+
               for (let i = 0; i < dataArray.length; i++) {
-                const norm = (dataArray[i] - 128) / 128;
-                sumSquares += norm * norm;
+                const n = (dataArray[i] - 128) / 128;
+
+                sum += n * n;
               }
-              const rms = Math.sqrt(sumSquares / dataArray.length);
-              const mouthOpen = Math.min(1, rms * 6); // amplifikasi agar mulut terlihat gerak
+
+              const rms = Math.sqrt(sum / dataArray.length);
+
+              const mouth = Math.min(1, rms * 6);
 
               if (
                 model &&
@@ -201,15 +408,18 @@
               ) {
                 model.internalModel.coreModel.setParameterValueById(
                   mouthParamId,
-                  mouthOpen,
+                  mouth,
                 );
               }
+
               lipSyncRAF = requestAnimationFrame(tick);
             }
+
             tick();
 
             source.onended = () => {
               cancelAnimationFrame(lipSyncRAF);
+
               if (
                 model &&
                 model.internalModel &&
@@ -222,11 +432,9 @@
               }
             };
           },
-          (err) => console.error("decodeAudioData error", err),
         );
       }
 
-      // ── WebSocket ke server CLI ──────────────────────────────────────────────
       function connectWS() {
         const ws = new WebSocket(`ws://${location.host}/ws`);
 
@@ -236,35 +444,37 @@
 
         ws.onmessage = (ev) => {
           try {
-            const raw = typeof ev.data === "string" ? ev.data : "";
-            if (!raw) return;
-            const msg = JSON.parse(raw);
-            if (msg.type === "speak" && msg.audio_b64) {
+            const msg = JSON.parse(ev.data);
+
+            if (msg.type === "speak") {
               playAudioWithLipSync(msg.audio_b64);
-            } else if (msg.type === "expression" && model) {
-              model.expression(msg.name);
             }
-          } catch (e) {
-            console.error("WS message error", e, ev.data);
+
+            if (msg.type === "expression") {
+              applyExpression(msg.name);
+            }
+          } catch (err) {
+            console.error(err);
           }
         };
 
         ws.onclose = () => {
-          statusEl.style.display = "block";
-          statusEl.textContent = "Disconnected — retry in 2s…";
+          statusEl.textContent = "Disconnected";
+
           setTimeout(connectWS, 2000);
         };
-
-        ws.onerror = () => ws.close();
       }
+
       connectWS();
 
-      // Browser butuh interaksi user pertama untuk AudioContext (autoplay policy)
       document.body.addEventListener(
         "click",
         () => {
-          setupAudioContext();
-          if (audioCtx.state === "suspended") audioCtx.resume();
+          setupAudio();
+
+          if (audioCtx && audioCtx.state === "suspended") {
+            audioCtx.resume();
+          }
         },
         { once: true },
       );

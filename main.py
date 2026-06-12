@@ -103,8 +103,19 @@ def main():
 
     provider, api_key = _setup_provider(cfg)
 
+    import config
+
+    config.PROVIDER = provider
+    config.OPENROUTER_API_KEY = api_key
+
+    print("SET API_KEY =", repr(api_key))
+
     default_model        = cfg.get("default_model", "")
     model_id, model_desc = pilih_model(default_model)
+
+    config.MODEL = model_id
+
+    print("SET MODEL =", model_id)
     persona_nama         = PERSONA_NAMA
     sys_prompt           = PERSONA_PROMPT
 
@@ -128,6 +139,24 @@ def main():
     messages            = [system_msg]
     all_history         = load_history()
     current_session_idx = None
+
+    # Auto start avatar
+    try:
+        ok = avatar_server.start_server(
+            open_browser=True
+        )
+
+        if ok:
+            print(
+                f"\n{GREEN}✓ Avatar aktif di "
+                f"http://{avatar_server.HOST}:{avatar_server.PORT}{R}"
+            )
+
+    except Exception as e:
+
+        print(
+            f"\n{RED}❌ Avatar gagal start: {e}{R}"
+        )
 
     # ── Command loop ──────────────────────────────────────────────────────────
     while True:
@@ -292,14 +321,6 @@ def main():
                 print(f"  Persona : {CYAN}{PERSONA_NAMA}{R}")
                 print(f"  CWD     : {CYAN}{cwd}{R}")
                 print(f"  Voice   : {voice_status}\n")
-
-            elif cmd == "/avatar":
-                ok = avatar_server.start_server(open_browser=True)
-                if ok:
-                    print(f"\n{GREEN}✓ Avatar dibuka di http://{avatar_server.HOST}:{avatar_server.PORT}{R}")
-                    print(f"{DIM}Klik di window/tab avatar sekali agar audio bisa diputar (browser autoplay policy).{R}\n")
-                else:
-                    print(f"\n{RED}❌ Gagal start avatar server. Pastikan sudah: pip install flask flask-sock{R}\n")
 
             elif cmd == "/help":
                 help_text()

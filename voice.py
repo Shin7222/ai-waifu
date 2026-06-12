@@ -69,9 +69,39 @@ def _play_audio_file(path: Path):
         print(f"  {DIM}(gagal memutar audio: {e}){R}")
 
 
+def synthesize_wav(text: str) -> bytes:
+    """
+    Sintesis teks via VOICEVOX, return bytes WAV (tanpa play lokal).
+    Dipakai oleh avatar_server/web mode untuk broadcast audio ke browser.
+    Return b"" jika gagal.
+    """
+    text = _clean_text_for_tts(text)
+    if not text:
+        return b""
+
+    try:
+        q = requests.post(
+            f"{config.VOICEVOX_URL}/audio_query",
+            params={"text": text, "speaker": config.VOICEVOX_SPEAKER},
+            timeout=15,
+        )
+        q.raise_for_status()
+
+        s = requests.post(
+            f"{config.VOICEVOX_URL}/synthesis",
+            params={"speaker": config.VOICEVOX_SPEAKER},
+            json=q.json(),
+            timeout=30,
+        )
+        s.raise_for_status()
+        return s.content
+    except Exception as e:
+        print(f"  {DIM}(synthesize_wav gagal: {e}){R}")
+        return b""
+
+
 def speak_text(text: str) -> str:
-    """Sintesis teks via VOICEVOX, mainkan audio lokal, dan kirim ke avatar browser
-    (jika avatar server berjalan) untuk lip-sync. Return pesan status."""
+    """Sintesis teks via VOICEVOX lalu mainkan audionya. Return pesan status."""
     text = _clean_text_for_tts(text)
     if not text:
         return "ℹ️ Tidak ada teks untuk dibacakan."
@@ -94,15 +124,6 @@ def speak_text(text: str) -> str:
 
         _TEMP_VOICE_FILE.parent.mkdir(parents=True, exist_ok=True)
         _TEMP_VOICE_FILE.write_bytes(s.content)
-
-        # Kirim ke avatar browser (jika ada) untuk lip-sync — tidak blocking jika gagal
-        try:
-            import avatar_server
-            if avatar_server.is_running():
-                avatar_server.broadcast_audio(s.content)
-        except Exception:
-            pass
-
         _play_audio_file(_TEMP_VOICE_FILE)
         return "✅ Suara diputar."
     except requests.exceptions.ConnectionError:

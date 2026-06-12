@@ -1,57 +1,17 @@
-# Python
 __pycache__/
-*.py[cod]
-*$py.class
+*.pyc
 
-# Virtual Environment
-.venv/
-venv/
-env/
-
-# Environment Variables
+# History & config lokal
+history/
 .env
 
-# VSCode
+# Audio temp
+*.wav
+
+# Editor/OS
 .vscode/
-
-# JetBrains
-.idea/
-
-# Linux
-*.swp
-*.swo
 .DS_Store
 
-# Logs
-*.log
-logs/
-
-# Database
-*.db
-*.sqlite3
-
-# Cache
-.cache/
-
-# AI Models
-web/model/
-model/
-models/
-
-# Model files
-*.gguf
-*.bin
-*.pth
-*.pt
-*.ckpt
-*.safetensors
-*.onnx
-
-# Generated audio
-audio/
-recordings/
-output/
-
-# Temporary files
-tmp/
-temp/
+# Virtual env (jika ada)
+venv/
+.venv/

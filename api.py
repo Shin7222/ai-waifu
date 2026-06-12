@@ -10,6 +10,8 @@ import json, time
 
 import requests
 
+from flask import request, jsonify
+
 import config
 from config import (
     PROVIDER, OLLAMA_URL, OPENROUTER_URL,
@@ -267,3 +269,145 @@ def process_response(api_key: str, model: str, messages: list) -> str:
             print(f"  {DIM}→ {preview}{'...' if len(result) > 200 else ''}{R}\n")
 
             messages.append({"role": "tool", "content": result})
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Avatar / Web API Helpers
+# ──────────────────────────────────────────────────────────────────────────────
+
+def process_response_api(api_key: str, model: str, messages: list):
+    """
+    Versi process_response untuk web/avatar.
+    Tidak print ke terminal.
+    Tidak speak otomatis.
+    Mengembalikan dict.
+    """
+
+    while True:
+        full_content = ""
+        tool_calls = []
+
+        for chunk in call_api_stream(model, messages, api_key):
+            msg = chunk.get("message", {})
+
+            full_content += msg.get("content", "")
+
+            if msg.get("tool_calls"):
+                tool_calls = msg["tool_calls"]
+
+            if chunk.get("done"):
+                break
+
+        assistant_msg = {
+            "role": "assistant",
+            "content": full_content
+        }
+
+        if tool_calls:
+            assistant_msg["tool_calls"] = tool_calls
+
+        messages.append(assistant_msg)
+
+        if not tool_calls:
+            return {
+                "text": full_content,
+                "emotion": detect_emotion(full_content),
+                "tool_calls": []
+            }
+
+        for tc in tool_calls:
+
+            fn_name = tc["function"]["name"]
+
+            fn_args = tc["function"].get("arguments", {})
+
+            if isinstance(fn_args, str):
+                try:
+                    fn_args = json.loads(fn_args)
+                except Exception:
+                    fn_args = {}
+
+            result = (
+                TOOL_MAP[fn_name](fn_args)
+                if fn_name in TOOL_MAP
+                else f"❌ Tool tidak dikenal: {fn_name}"
+            )
+
+            messages.append({
+                "role": "tool",
+                "content": result
+            })
+
+
+def ask_ai(message: str):
+
+    messages = [
+        {
+            "role": "user",
+            "content": message
+        }
+    ]
+
+    api_key = getattr(config, "OPENROUTER_API_KEY", "")
+    model = getattr(config, "MODEL", "llama3")
+
+    print("DEBUG API_KEY =", repr(api_key))
+    print("DEBUG MODEL   =", repr(model))
+    print("DEBUG PROVIDER=", getattr(config, "PROVIDER", None))
+
+    result = process_response_api(
+        api_key,
+        model,
+        messages
+    )
+
+    # ── TTS: synthesize via VOICEVOX & broadcast ke browser ────────────────
+    text = result.get("text", "")
+    if text.strip():
+        try:
+            from voice import synthesize_wav
+            import avatar_server
+
+            wav_bytes = synthesize_wav(text)
+            if wav_bytes:
+                avatar_server.broadcast_audio(wav_bytes)
+                avatar_server.broadcast_expression(result.get("emotion", "normal"))
+            else:
+                print("DEBUG TTS: synthesize_wav returned empty (cek VOICEVOX_URL / VOICEVOX app)")
+        except Exception as e:
+            print("DEBUG TTS ERROR:", e)
+
+    return result
+
+
+def detect_emotion(text: str):
+    """
+    Deteksi emosi sederhana.
+    """
+
+    t = text.lower()
+
+    if any(x in t for x in [
+        "senang",
+        "bahagia",
+        "gembira",
+        "hehe",
+        "haha"
+    ]):
+        return "happy"
+
+    if any(x in t for x in [
+        "sedih",
+        "kecewa",
+        "duka"
+    ]):
+        return "sad"
+
+    if any(x in t for x in [
+        "marah",
+        "kesal",
+        "geram"
+    ]):
+        return "angry"
+
+    return "normal"
